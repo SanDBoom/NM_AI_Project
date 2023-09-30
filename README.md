@@ -123,3 +123,5 @@ By following this design document, we aim to create a Python-based chatbot that 
 ---
 
 Note: This document outlines the design and implementation approach for the chatbot. Actual implementation may require adjustments based on specific technical requirements and user feedback during the development process.
+
+Dataset Link: https://www.kaggle.com/datasets/grafstor/simple-dialogs-for-chatbot
