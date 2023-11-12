@@ -1,40 +1,16 @@
-# chatbot.py
-from tensorflow.keras.layers import LSTM, Dense, Embedding, Dropout, LayerNormalization
-import string
 import re
-import tensorflow as tf
-from tensorflow.keras.layers import TextVectorization
-import seaborn as sns
-import matplotlib.pyplot as plt
-import pandas as pd
 import numpy as np
+import pandas as pd
+import tensorflow as tf
+from tensorflow.keras.layers.experimental.preprocessing import TextVectorization
 
 
-def chatbot_response(user_input):
-    return "You said: " + user_input
-
-
-df = pd.read_csv('dialogs.txt', sep='\t', names=['question', 'answer'])
-print(f'Dataframe size: {len(df)}')
-df.head()
-
+df = pd.read_csv('/dialogs.txt', sep='\t', names=['question', 'answer'])
 """# Data Preprocessing
 
-## Data Visualization
-"""
-
+## Text Cleaning"""
 df['question tokens'] = df['question'].apply(lambda x: len(x.split()))
 df['answer tokens'] = df['answer'].apply(lambda x: len(x.split()))
-plt.style.use('fivethirtyeight')
-fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(20, 5))
-sns.set_palette('Set2')
-sns.histplot(x=df['question tokens'], data=df, kde=True, ax=ax[0])
-sns.histplot(x=df['answer tokens'], data=df, kde=True, ax=ax[1])
-sns.jointplot(x='question tokens', y='answer tokens',
-              data=df, kind='kde', fill=True, cmap='YlGnBu')
-plt.show()
-
-"""## Text Cleaning"""
 
 
 def clean_text(text):
@@ -70,29 +46,12 @@ df['encoder_inputs'] = df['question'].apply(clean_text)
 df['decoder_targets'] = df['answer'].apply(clean_text)+' <end>'
 df['decoder_inputs'] = '<start> '+df['answer'].apply(clean_text)+' <end>'
 
-df.head(10)
-
 df['encoder input tokens'] = df['encoder_inputs'].apply(
     lambda x: len(x.split()))
 df['decoder input tokens'] = df['decoder_inputs'].apply(
     lambda x: len(x.split()))
 df['decoder target tokens'] = df['decoder_targets'].apply(
     lambda x: len(x.split()))
-plt.style.use('fivethirtyeight')
-fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(20, 5))
-sns.set_palette('Set2')
-sns.histplot(x=df['encoder input tokens'], data=df, kde=True, ax=ax[0])
-sns.histplot(x=df['decoder input tokens'], data=df, kde=True, ax=ax[1])
-sns.histplot(x=df['decoder target tokens'], data=df, kde=True, ax=ax[2])
-sns.jointplot(x='encoder input tokens', y='decoder target tokens',
-              data=df, kind='kde', fill=True, cmap='YlGnBu')
-plt.show()
-
-print(
-    f"After preprocessing: {' '.join(df[df['encoder input tokens'].max()==df['encoder input tokens']]['encoder_inputs'].values.tolist())}")
-print(f"Max encoder input length: {df['encoder input tokens'].max()}")
-print(f"Max decoder input length: {df['decoder input tokens'].max()}")
-print(f"Max decoder target length: {df['decoder target tokens'].max()}")
 
 df.drop(columns=['question', 'answer', 'encoder input tokens',
         'decoder input tokens', 'decoder target tokens'], axis=1, inplace=True)
@@ -112,9 +71,6 @@ lstm_cells = params['lstm_cells']
 vocab_size = params['vocab_size']
 buffer_size = params['buffer_size']
 max_sequence_length = params['max_sequence_length']
-df.head(10)
-
-"""## Tokenization"""
 
 vectorize_layer = TextVectorization(
     max_tokens=vocab_size,
@@ -125,8 +81,6 @@ vectorize_layer = TextVectorization(
 vectorize_layer.adapt(df['encoder_inputs']+' ' +
                       df['decoder_targets']+' <start> <end>')
 vocab_size = len(vectorize_layer.get_vocabulary())
-print(f'Vocab size: {len(vectorize_layer.get_vocabulary())}')
-print(f'{vectorize_layer.get_vocabulary()[:12]}')
 
 
 def sequences2ids(sequence):
@@ -142,40 +96,115 @@ def ids2sequences(ids):
     return decode
 
 
-x = sequences2ids(df['encoder_inputs'])
-yd = sequences2ids(df['decoder_inputs'])
-y = sequences2ids(df['decoder_targets'])
+class ChatBot(tf.keras.models.Model):
+    def __init__(self, base_encoder, base_decoder, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.encoder, self.decoder = self.build_inference_model(
+            base_encoder, base_decoder)
 
-print(f'Question sentence: hi , how are you ?')
-print(f'Question to tokens: {sequences2ids("hi , how are you ?")[:10]}')
-print(f'Encoder input shape: {x.shape}')
-print(f'Decoder input shape: {yd.shape}')
-print(f'Decoder target shape: {y.shape}')
+    def build_inference_model(self, base_encoder, base_decoder):
+        encoder_inputs = tf.keras.Input(shape=(None,))
+        x = base_encoder.layers[0](encoder_inputs)
+        x = base_encoder.layers[1](x)
+        x, encoder_state_h, encoder_state_c = base_encoder.layers[2](x)
+        encoder = tf.keras.models.Model(inputs=encoder_inputs, outputs=[
+                                        encoder_state_h, encoder_state_c], name='chatbot_encoder')
+        lstm_cells = 256
+        decoder_input_state_h = tf.keras.Input(shape=(lstm_cells,))
+        decoder_input_state_c = tf.keras.Input(shape=(lstm_cells,))
+        decoder_inputs = tf.keras.Input(shape=(None,))
+        x = base_decoder.layers[0](decoder_inputs)
+        x = base_encoder.layers[1](x)
+        x, decoder_state_h, decoder_state_c = base_decoder.layers[2](
+            x, initial_state=[decoder_input_state_h, decoder_input_state_c])
+        decoder_outputs = base_decoder.layers[-1](x)
+        decoder = tf.keras.models.Model(
+            inputs=[decoder_inputs, [
+                decoder_input_state_h, decoder_input_state_c]],
+            outputs=[decoder_outputs, [decoder_state_h,
+                                       decoder_state_c]], name='chatbot_decoder'
+        )
+        return encoder, decoder
 
-print(f'Encoder input: {x[0][:12]} ...')
-# shifted by one time step of the target as input to decoder is the output of the previous timestep
-print(f'Decoder input: {yd[0][:12]} ...')
-print(f'Decoder target: {y[0][:12]} ...')
+    def summary(self):
+        self.encoder.summary()
+        self.decoder.summary()
 
-data = tf.data.Dataset.from_tensor_slices((x, yd, y))
-data = data.shuffle(buffer_size)
+    def softmax(self, z):
+        return np.exp(z)/sum(np.exp(z))
 
-train_data = data.take(int(.9*len(data)))
-train_data = train_data.cache()
-train_data = train_data.shuffle(buffer_size)
-train_data = train_data.batch(batch_size)
-train_data = train_data.prefetch(tf.data.AUTOTUNE)
-train_data_iterator = train_data.as_numpy_iterator()
+    def sample(self, conditional_probability, temperature=0.5):
+        conditional_probability = np.asarray(
+            conditional_probability).astype("float64")
+        conditional_probability = np.log(conditional_probability) / temperature
+        reweighted_conditional_probability = self.softmax(
+            conditional_probability)
+        probas = np.random.multinomial(
+            1, reweighted_conditional_probability, 1)
+        return np.argmax(probas)
 
-val_data = data.skip(int(.9*len(data))).take(int(.1*len(data)))
-val_data = val_data.batch(batch_size)
-val_data = val_data.prefetch(tf.data.AUTOTUNE)
+    def postprocess(self, text):
+        text = re.sub(' - ', '-', text.lower())
+        text = re.sub(' [.] ', '. ', text)
+        text = re.sub(' [1] ', '1', text)
+        text = re.sub(' [2] ', '2', text)
+        text = re.sub(' [3] ', '3', text)
+        text = re.sub(' [4] ', '4', text)
+        text = re.sub(' [5] ', '5', text)
+        text = re.sub(' [6] ', '6', text)
+        text = re.sub(' [7] ', '7', text)
+        text = re.sub(' [8] ', '8', text)
+        text = re.sub(' [9] ', '9', text)
+        text = re.sub(' [0] ', '0', text)
+        text = re.sub(' [,] ', ', ', text)
+        text = re.sub(' [?] ', '? ', text)
+        text = re.sub(' [!] ', '! ', text)
+        text = re.sub(' [$] ', '$ ', text)
+        text = re.sub(' [&] ', '& ', text)
+        text = re.sub(' [/] ', '/ ', text)
+        text = re.sub(' [:] ', ': ', text)
+        text = re.sub(' [;] ', '; ', text)
+        text = re.sub(' [*] ', '* ', text)
+        text = re.sub(' [\'] ', '\'', text)
+        text = re.sub(' [\"] ', '\"', text)
+        return text
 
-_ = train_data_iterator.next()
-print(f'Number of train batches: {len(train_data)}')
-print(f'Number of training data: {len(train_data)*batch_size}')
-print(f'Number of validation batches: {len(val_data)}')
-print(f'Number of validation data: {len(val_data)*batch_size}')
-print(f'Encoder Input shape (with batches): {_[0].shape}')
-print(f'Decoder Input shape (with batches): {_[1].shape}')
-print(f'Target Output shape (with batches): {_[2].shape}')
+    def call(self, text, config=None):
+        input_seq = self.preprocess(text)
+        states = self.encoder(input_seq, training=False)
+        target_seq = np.zeros((1, 1))
+        target_seq[:, :] = sequences2ids(['<start>']).numpy()[0][0]
+        stop_condition = False
+        decoded = []
+        while not stop_condition:
+            decoder_outputs, new_states = self.decoder(
+                [target_seq, states], training=False)
+#             index=tf.argmax(decoder_outputs[:,-1,:],axis=-1).numpy().item()
+            index = self.sample(decoder_outputs[0, 0, :]).item()
+            word = ids2sequences([index])
+            max_sequence_length = 30
+            if word == '<end> ' or len(decoded) >= max_sequence_length:
+                stop_condition = True
+            else:
+                decoded.append(index)
+                target_seq = np.zeros((1, 1))
+                target_seq[:, :] = index
+                states = new_states
+        return self.postprocess(ids2sequences(decoded))
+
+
+# Load the saved model
+loaded_model = tf.keras.models.load_model(
+    'D:\Testing_Folder\Phase_3\models')
+
+# Create an instance of the ChatBot class
+chatbot = ChatBot(loaded_model.get_layer('chatbot_encoder'),
+                  loaded_model.get_layer('chatbot_decoder'))
+
+
+def chatbot_response(text):
+    return chatbot.call(text)
+# # Now you can use the chatbot to get responses
+# user_input = "Hi"  # Replace with the text you want to generate a response for
+# response = chatbot.call(user_input)
+# print("Chatbot Response:", response)
